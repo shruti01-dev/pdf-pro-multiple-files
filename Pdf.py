@@ -21,16 +21,17 @@ Core features included:
 14. Extract PDF tables/text to Excel
 
 Install dependencies:
-    python3 -m pip install pypdf pillow reportlab python-docx pandas openpyxl pymupdf pdfplumber
+    python3 -m pip install -r requirements.txt
     # Optional (scanned/image PDFs): install Tesseract OCR
-    #   winget install --id UB-Mannheim.TesseractOCR
+    #   Windows: winget install --id UB-Mannheim.TesseractOCR
+    #   macOS:   brew install tesseract
 
 Run:
-    python3 ssa_pdf_studio_app.py
+    python3 Pdf.py
 
-For Mac app packaging later:
+Packaging (PyInstaller is not a cross-compiler, so run this on the target OS):
     python3 -m pip install pyinstaller
-    pyinstaller --windowed --onefile --name "SSA PDF Studio" ssa_pdf_studio_app.py
+    pyinstaller pdf.spec
 """
 
 import os
@@ -3278,7 +3279,7 @@ def pdf_to_word():
                         raise RuntimeError(
                             "This PDF is a SCAN (each page is a photo), so Word has no text to copy.\n\n"
                             "Install OCR once, restart SSA PDF Studio, then run PDF to Word again:\n\n"
-                            "  winget install --id UB-Mannheim.TesseractOCR\n\n"
+                            f"  {_tesseract_install_command()}\n\n"
                             f"({exc})"
                         ) from exc
                     tessdata = ""
@@ -7363,9 +7364,63 @@ def _pdf_extractable_char_count(pdf_path: str) -> int:
     return total
 
 
+def _tesseract_candidates() -> List[str]:
+    """Known install locations for the tesseract binary, per platform."""
+    if os.name == "nt":
+        return [
+            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe"),
+            os.path.expandvars(r"%USERPROFILE%\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"),
+        ]
+    if sys.platform == "darwin":
+        # Launched from Finder a .app inherits a minimal PATH that excludes both
+        # Homebrew prefixes, so these have to be probed explicitly.
+        return [
+            "/opt/homebrew/bin/tesseract",  # Apple Silicon Homebrew
+            "/usr/local/bin/tesseract",  # Intel Homebrew
+            "/opt/local/bin/tesseract",  # MacPorts
+        ]
+    return ["/usr/bin/tesseract", "/usr/local/bin/tesseract"]
+
+
+def _find_tessdata(exe: str) -> str:
+    """
+    Locate the tessdata folder holding eng.traineddata for a given binary.
+
+    Windows keeps tessdata next to the binary, while Homebrew/MacPorts and most
+    Linux packages install it under ../share, so both layouts are searched.
+    """
+    root = os.path.dirname(exe)
+    prefix = os.path.dirname(root)
+    candidates = [
+        os.environ.get("TESSDATA_PREFIX", ""),
+        os.path.join(os.environ.get("TESSDATA_PREFIX", ""), "tessdata"),
+        os.path.join(root, "tessdata"),
+        os.path.join(prefix, "share", "tessdata"),
+        os.path.join(prefix, "share", "tesseract-ocr", "tessdata"),
+        "/opt/homebrew/share/tessdata",
+        "/usr/local/share/tessdata",
+        "/opt/local/share/tessdata",
+        "/usr/share/tessdata",
+        "/usr/share/tesseract-ocr/tessdata",
+    ]
+    # Homebrew nests tessdata under a version folder, e.g. share/tessdata/5.
+    for base in ("/opt/homebrew/share", "/usr/local/share"):
+        versioned = os.path.join(base, "tesseract-ocr")
+        if os.path.isdir(versioned):
+            for entry in sorted(os.listdir(versioned), reverse=True):
+                candidates.append(os.path.join(versioned, entry, "tessdata"))
+
+    for alt in candidates:
+        if alt and os.path.isfile(os.path.join(alt, "eng.traineddata")):
+            return alt
+    return ""
+
+
 def _find_tesseract() -> Tuple[str, str]:
     """
-    Locate tesseract.exe and its tessdata folder.
+    Locate the tesseract binary and its tessdata folder.
     Returns (tesseract_exe, tessdata_dir) or ("", "").
     """
     import shutil
@@ -7374,40 +7429,45 @@ def _find_tesseract() -> Tuple[str, str]:
     which = shutil.which("tesseract")
     if which:
         candidates.append(which)
-    candidates.extend(
-        [
-            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe"),
-            os.path.expandvars(r"%USERPROFILE%\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"),
-        ]
-    )
+    candidates.extend(_tesseract_candidates())
+
+    first_exe = ""
     for exe in candidates:
         if not exe or not os.path.isfile(exe):
             continue
-        root = os.path.dirname(exe)
-        tessdata = os.path.join(root, "tessdata")
-        if os.path.isdir(tessdata) and os.path.isfile(os.path.join(tessdata, "eng.traineddata")):
+        if not first_exe:
+            first_exe = exe
+        tessdata = _find_tessdata(exe)
+        if tessdata:
             return exe, tessdata
-        # Some installs keep tessdata beside the exe under a nested folder
-        for alt in (
-            tessdata,
-            os.path.join(root, "tessdata"),
-            os.environ.get("TESSDATA_PREFIX", ""),
-        ):
-            if alt and os.path.isfile(os.path.join(alt, "eng.traineddata")):
-                return exe, alt
-        return exe, tessdata if os.path.isdir(tessdata) else ""
-    return "", ""
+    # Binary present but no language data: report it so the caller can say so.
+    return first_exe, ""
+
+
+def _tesseract_install_command() -> str:
+    if sys.platform == "darwin":
+        return "brew install tesseract"
+    if os.name == "nt":
+        return "winget install --id UB-Mannheim.TesseractOCR"
+    return "sudo apt install tesseract-ocr"
 
 
 def _tesseract_install_help() -> str:
+    if sys.platform == "darwin":
+        source = (
+            "If the brew command is not found, install Homebrew first\n"
+            "from https://brew.sh and then run the command above.\n"
+        )
+    elif os.name == "nt":
+        source = "Or download: https://github.com/UB-Mannheim/tesseract/wiki\n"
+    else:
+        source = "Or use your distribution's package manager.\n"
     return (
         "This PDF is scanned (image-only) — Tesseract OCR is required.\n\n"
         "Install once, then restart SSA PDF Studio:\n"
-        "  winget install --id UB-Mannheim.TesseractOCR\n\n"
-        "Or download: https://github.com/UB-Mannheim/tesseract/wiki\n"
-        "After install, run PDF to Excel again."
+        f"  {_tesseract_install_command()}\n\n"
+        + source
+        + "After install, run PDF to Excel again."
     )
 
 
@@ -7428,8 +7488,9 @@ def _prepare_tesseract_env() -> str:
     if tessdata and os.path.isdir(tessdata) and os.path.isfile(
         os.path.join(tessdata, "eng.traineddata")
     ):
-        # Tesseract expects TESSDATA_PREFIX = parent of the tessdata folder
-        os.environ["TESSDATA_PREFIX"] = tess_dir + os.sep
+        # Tesseract expects TESSDATA_PREFIX = parent of the tessdata folder,
+        # which is the bin dir on Windows but ../share under Homebrew.
+        os.environ["TESSDATA_PREFIX"] = os.path.dirname(tessdata) + os.sep
         return tessdata
 
     raise RuntimeError(
@@ -8302,8 +8363,7 @@ def pdf_to_excel():
                 ["No extractable text was found in this PDF."],
                 ["Your PDF looks scanned/image-only."],
                 ["Install Tesseract OCR, then restart this app and try again:"],
-                ["winget install --id UB-Mannheim.TesseractOCR"],
-                ["Download: https://github.com/UB-Mannheim/tesseract/wiki"],
+                [_tesseract_install_command()],
             ]
             _write_table_sheet(wb, _unique_sheet_name(used_names, "Note"), tips)
             sheet_written = "Note"
@@ -8336,13 +8396,13 @@ def pdf_to_excel():
         if is_scanned:
             hint = (
                 "This PDF is scanned (image only). Install Tesseract, restart the app, try again:\n"
-                "winget install --id UB-Mannheim.TesseractOCR"
+                f"{_tesseract_install_command()}"
             )
         else:
             hint = (
                 "This PDF has text, but no transaction table was detected.\n"
                 "Try PDF to Word for a page copy, or install Tesseract if pages are photos:\n"
-                "winget install --id UB-Mannheim.TesseractOCR"
+                f"{_tesseract_install_command()}"
             )
         summary = (
             f"Excel file created:\n{out}\n"
