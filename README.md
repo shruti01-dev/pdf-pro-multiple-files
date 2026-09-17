@@ -93,15 +93,4 @@ for that tag. To test a build without releasing, open the **Actions** tab, pick
 
 ## License
 
-SSA PDF Studio is released under the **GNU Affero General Public License v3.0** —
-see [LICENSE.txt](LICENSE.txt). Copyright (C) 2026 SSA.
-
-The app bundles [PyMuPDF](https://github.com/pymupdf/PyMuPDF), which is AGPL-licensed, so the
-combined application must be AGPL too. In practice this means you may use, modify, and share it
-freely, and anyone who receives the app is entitled to this source code. Copyright stays with SSA,
-and redistributors must keep the copyright notice.
-
-If you need to ship this as closed-source software, buy a commercial PyMuPDF license from
-[Artifex](https://artifex.com/licensing) instead of relying on the AGPL.
-
-See [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt) for every bundled library and its license.
+Private / internal use unless you add a license file.
